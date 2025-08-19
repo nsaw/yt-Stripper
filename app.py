@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+from analysis.insight_engine import generate_insights_and_actions
 
 st.set_page_config(page_title="YouTube Audit Dashboard", layout="wide")
 PD, RP = "data/processed", "reports"
@@ -17,6 +18,26 @@ analytics = lp(f"{PD}/analytics_365d.parquet")
 thumbs = lp(f"{PD}/thumbnail_features.parquet")
 
 st.title("📊 YouTube Deep-Dive Dashboard")
+
+# === Insights & Actions ===
+try:
+    payload = generate_insights_and_actions(master, prov if 'prov' in globals() else {})
+    st.header('🔎 Insights')
+    if payload.get('narrative_gpt'):
+        st.write(payload['narrative_gpt'])
+    if payload.get('insights_heuristic'):
+        st.subheader('Heuristic Highlights')
+        for i in payload['insights_heuristic']:
+            st.markdown(f'- {i}')
+    st.header('✅ Action Items')
+    actions = payload.get('actions_heuristic', [])
+    if actions:
+        import pandas as pd
+        st.dataframe(pd.DataFrame(actions))
+    else:
+        st.info('No actions generated yet. Add more data or enable Analytics per-video for deeper signals.')
+except Exception as _e:
+    st.warning('Insights engine unavailable — check data or LLM settings.')
 
 # HONEST MODE banner
 import json, time
