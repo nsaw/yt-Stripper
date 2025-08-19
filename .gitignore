@@ -1,0 +1,15 @@
+
+.env*
+client_secret.json
+token_*.json
+__pycache__/
+*.pyc
+data/raw/*
+data/processed/*
+reports/*
+.notebook_checkpoints/
+.DS_Store
+yt-stripper-25bca5475dd4.json
+.venv/
+node_modules/
+.cursor/
