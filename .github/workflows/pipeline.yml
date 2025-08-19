@@ -1,0 +1,40 @@
+
+name: nightly-youtube-audit
+on:
+  schedule:
+    - cron: '17 9 * * *'  # daily 09:17 UTC
+  workflow_dispatch: {}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Restore OAuth token (optional)
+        uses: actions/download-artifact@v4
+        with:
+          name: oauth-token
+        continue-on-error: true
+      - name: Fetch videos
+        run: python scripts/fetch_videos.py
+      - name: Fetch analytics
+        run: python scripts/fetch_analytics.py
+      - name: Fetch comments
+        run: python scripts/fetch_comments.py || true
+      - name: Fetch captions
+        run: python scripts/fetch_captions.py || true
+      - name: Analysis
+        run: |
+          python analysis/cross_analyze.py
+          python analysis/thumbnail_scores.py
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: yt-audit-reports
+          path: |
+            reports/**
+            data/processed/**
