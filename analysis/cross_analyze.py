@@ -13,9 +13,24 @@ REPORTS = ROOT / os.getenv('REPORTS_DIR', 'reports')
 REPORTS.mkdir(parents=True, exist_ok=True)
 
 def load_data():
+    # Prefer unified master_join if available
+    import os
+    mp = PROC / 'master_join.parquet'
+    if mp.exists():
+        df = pd.read_parquet(mp)
+        comments = None
+        try:
+            comments = pd.read_parquet(PROC / 'comments.parquet')
+        except Exception: comments = pd.DataFrame(columns=['videoId','text'])
+        return df, comments
+    
+    # Fallback to manual merge
     vids = pd.read_parquet(PROC / 'videos.parquet')
     analytics = pd.read_parquet(PROC / 'analytics_365d.parquet')
-    df = vids.merge(analytics, on='videoId', how='left')
+    if 'videoId' in analytics.columns:
+        df = vids.merge(analytics, on='videoId', how='left')
+    else:
+        df = vids.copy()  # analytics missing per-video; proceed with vids only
     comments = None
     try:
         comments = pd.read_parquet(PROC / 'comments.parquet')
@@ -73,7 +88,8 @@ def main():
     simdf = pd.DataFrame(title_scores)
     out = df.merge(simdf, on='videoId', how='left')
     # Correlate with CTR and avg view duration
-    corr = out[['clickThroughRate','averageViewDuration','title_caption_sim']].corr(numeric_only=True)
+    cols = [c for c in ['clickThroughRate','averageViewDuration','title_caption_sim'] if c in out.columns]
+    corr = out[cols].corr(numeric_only=True) if cols else pd.DataFrame()
     corr.to_csv(REPORTS / 'correlations.csv')
     out.to_parquet(PROC / 'master_join.parquet', index=False)
     print('Wrote:', REPORTS / 'correlations.csv', 'and', PROC / 'master_join.parquet')

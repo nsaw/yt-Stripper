@@ -2,7 +2,6 @@ import os
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
-import numpy as np
 
 st.set_page_config(page_title="YouTube Audit Dashboard", layout="wide")
 PD, RP = "data/processed", "reports"
@@ -15,52 +14,102 @@ def lp(p):
 
 videos = lp(f"{PD}/videos.parquet")
 analytics = lp(f"{PD}/analytics_365d.parquet")
-master = lp(f"{PD}/master_join.parquet")
 thumbs = lp(f"{PD}/thumbnail_features.parquet")
 
 st.title("📊 YouTube Deep-Dive Dashboard")
+
+# HONEST MODE banner
+import json, time
+prov = {"synthetic": None, "source":"unknown","ts":None}
+try:
+    honest_banner
+except Exception as _e:
+    pass
+try:
+    prov = json.load(open("data_provenance.json"))
+except Exception:
+    pass
+def honest_banner(df_master):
+    missing = []
+    for path in ["data/processed/analytics_365d.parquet","reports/correlations.csv"]:
+        if not os.path.exists(path): missing.append(path)
+    if prov.get("synthetic") is True or missing or df_master.empty:
+        st.warning("HONEST MODE: Real analytics are missing or incomplete. No synthetic data is displayed.")
+        if missing: st.info("Missing artifacts: " + ", ".join(missing))
+        st.caption(f"Provenance source: {prov.get('source')} | synthetic: {prov.get('synthetic')} | ts: {prov.get('ts')}")
+
 st.markdown("---")
 
-if master.empty:
-    st.warning("Run the fetch + analysis scripts first.")
-    st.stop()
+# Try to load master_join first, fallback to manual merge
+master = lp(f"{PD}/master_join.parquet")
+if not master.empty:
+    df = master.copy()
+    if not thumbs.empty:
+        df = df.merge(thumbs, on="videoId", how="left")
+else:
+    # Create master dataframe by merging videos and analytics
+    if not videos.empty:
+        df = videos.copy()
+        # Only merge analytics if it has videoId column (per-video data)
+        if not analytics.empty and "videoId" in analytics.columns:
+            df = df.merge(analytics, on="videoId", how="left")
+        elif not analytics.empty:
+            # Analytics is channel-level totals, add as summary info
+            st.info("📊 Channel Analytics: " + str(analytics.iloc[0].to_dict()) if not analytics.empty else "")
+        if not thumbs.empty:
+            df = df.merge(thumbs, on="videoId", how="left")
+    else:
+        st.warning("Missing video data. Please run the fetch scripts first.")
+        st.stop()
 
-df = master.merge(thumbs, on="videoId", how="left") if not thumbs.empty else master.copy()
+# HONEST MODE banner
+(honest_banner(master) if 'master' in globals() or 'master' in locals() else None)
+
+# Data Status
+st.info("📊 **Data Status**: This dashboard shows real video metadata but analytics data is limited due to API quota restrictions.")
 
 # Key Metrics
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    total_views = int(df.get("views", 0).sum())
-    st.metric("Total Views (365d)", f"{total_views:,}")
+    total_videos = len(df)
+    st.metric("Total Videos", f"{total_videos}")
 with col2:
-    ctr = df.get("clickThroughRate")
-    if ctr is not None:
-        median_ctr = (ctr * 100).median()
-        st.metric("Median CTR", f"{median_ctr:.2f}%")
+    if "viewCount" in df.columns:
+        total_views = int(df["viewCount"].sum())
+        st.metric("Total Views", f"{total_views:,}")
     else:
-        st.metric("Median CTR", "—")
+        st.metric("Total Views", "API quota exceeded")
 with col3:
-    avd = df.get("averageViewDuration")
-    if avd is not None:
-        median_avd = avd.median()
-        st.metric("Median AVD", f"{median_avd:.1f}s")
+    if "likeCount" in df.columns:
+        total_likes = int(df["likeCount"].sum())
+        st.metric("Total Likes", f"{total_likes:,}")
     else:
-        st.metric("Median AVD", "—")
+        st.metric("Total Likes", "API quota exceeded")
 with col4:
-    total_subs = int(df.get("subscribersGained", 0).sum())
-    st.metric("Total Subs Gained", f"{total_subs:,}")
+    if "commentCount" in df.columns:
+        total_comments = int(df["commentCount"].sum())
+        st.metric("Total Comments", f"{total_comments:,}")
+    else:
+        st.metric("Total Comments", "API quota exceeded")
 
 st.markdown("---")
 
-# Top Performers
-st.subheader("🎯 Top Performers by CTR")
-cols = ["title", "videoId", "clickThroughRate", "impressions", "views", "averageViewDuration", "title_caption_sim"]
-display_cols = [c for c in cols if c in df.columns]
-if "clickThroughRate" in df.columns:
-    top_ctr = df[display_cols].sort_values("clickThroughRate", ascending=False).head(10)
-    st.dataframe(top_ctr, use_container_width=True)
-else:
-    st.info("CTR data not available")
+# Video List
+st.subheader("📺 Your YouTube Videos")
+display_cols = ["title", "publishedAt"]
+if "viewCount" in df.columns:
+    display_cols.append("viewCount")
+if "likeCount" in df.columns:
+    display_cols.append("likeCount")
+if "commentCount" in df.columns:
+    display_cols.append("commentCount")
+
+video_display = df[display_cols].copy()
+if "publishedAt" in video_display.columns:
+    video_display["publishedAt"] = pd.to_datetime(video_display["publishedAt"]).dt.strftime("%Y-%m-%d")
+    video_display = video_display.sort_values("publishedAt", ascending=False)
+
+st.dataframe(video_display, use_container_width=True)
 
 st.markdown("---")
 
@@ -68,31 +117,34 @@ st.markdown("---")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("📈 Title–Caption Similarity vs CTR")
-    q = df.dropna(subset=["title_caption_sim", "clickThroughRate"])
-    if not q.empty:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.scatter(q["title_caption_sim"], q["clickThroughRate"] * 100, alpha=0.6, s=50)
-        ax.set_xlabel("Title-Caption Similarity")
-        ax.set_ylabel("CTR (%)")
-        ax.grid(True, alpha=0.2)
-        ax.set_title("Content Alignment vs Performance")
-        st.pyplot(fig)
+    st.subheader("📊 Video Performance (if available)")
+    if "viewCount" in df.columns:
+        views_data = df["viewCount"].dropna()
+        if len(views_data) > 0:
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.hist(views_data, bins=min(10, len(views_data)), alpha=0.7, edgecolor='black')
+            ax.set_xlabel("Views")
+            ax.set_ylabel("Frequency")
+            ax.set_title("Video Views Distribution")
+            ax.grid(True, alpha=0.2)
+            st.pyplot(fig)
+        else:
+            st.info("No view data available")
     else:
-        st.info("Insufficient data for similarity analysis")
+        st.info("View data not available due to API quota limits")
 
 with col2:
-    st.subheader("📊 Views Distribution")
-    if "views" in df.columns:
+    st.subheader("📈 Engagement Metrics (if available)")
+    if "likeCount" in df.columns and "commentCount" in df.columns:
         fig, ax = plt.subplots(figsize=(8, 6))
-        ax.hist(df["views"], bins=10, alpha=0.7, edgecolor='black')
-        ax.set_xlabel("Views")
-        ax.set_ylabel("Frequency")
-        ax.set_title("Video Views Distribution")
+        ax.scatter(df["likeCount"], df["commentCount"], alpha=0.6, s=50)
+        ax.set_xlabel("Likes")
+        ax.set_ylabel("Comments")
+        ax.set_title("Likes vs Comments")
         ax.grid(True, alpha=0.2)
         st.pyplot(fig)
     else:
-        st.info("Views data not available")
+        st.info("Engagement data not available due to API quota limits")
 
 st.markdown("---")
 
@@ -106,24 +158,36 @@ if not thumbs.empty:
         col1, col2 = st.columns(2)
         
         with col1:
-            if "sharpness" in thumbs.columns:
-                fig, ax = plt.subplots(figsize=(8, 6))
-                ax.hist(thumbs["sharpness"].dropna(), bins=10, alpha=0.7, edgecolor='black')
-                ax.set_xlabel("Sharpness")
-                ax.set_ylabel("Frequency")
-                ax.set_title("Thumbnail Sharpness Distribution")
-                ax.grid(True, alpha=0.2)
-                st.pyplot(fig)
+            if "sharpness" in thumbs.columns and not thumbs["sharpness"].isna().all():
+                sharpness_data = thumbs["sharpness"].dropna()
+                if len(sharpness_data) > 0:
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    ax.hist(sharpness_data, bins=min(10, len(sharpness_data)), alpha=0.7, edgecolor='black')
+                    ax.set_xlabel("Sharpness")
+                    ax.set_ylabel("Frequency")
+                    ax.set_title("Thumbnail Sharpness Distribution")
+                    ax.grid(True, alpha=0.2)
+                    st.pyplot(fig)
+                else:
+                    st.info("No valid sharpness data available")
+            else:
+                st.info("Sharpness data not available")
         
         with col2:
-            if "text_density" in thumbs.columns:
-                fig, ax = plt.subplots(figsize=(8, 6))
-                ax.hist(thumbs["text_density"].dropna(), bins=10, alpha=0.7, edgecolor='black')
-                ax.set_xlabel("Text Density")
-                ax.set_ylabel("Frequency")
-                ax.set_title("Thumbnail Text Density Distribution")
-                ax.grid(True, alpha=0.2)
-                st.pyplot(fig)
+            if "text_density" in thumbs.columns and not thumbs["text_density"].isna().all():
+                text_density_data = thumbs["text_density"].dropna()
+                if len(text_density_data) > 0:
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    ax.hist(text_density_data, bins=min(10, len(text_density_data)), alpha=0.7, edgecolor='black')
+                    ax.set_xlabel("Text Density")
+                    ax.set_ylabel("Frequency")
+                    ax.set_title("Thumbnail Text Density Distribution")
+                    ax.grid(True, alpha=0.2)
+                    st.pyplot(fig)
+                else:
+                    st.info("No valid text density data available")
+            else:
+                st.info("Text density data not available")
 
 st.markdown("---")
 
